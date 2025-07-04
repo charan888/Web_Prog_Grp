@@ -1,3 +1,5 @@
+use crate::auth::{create_token, validate_token};
+use crate::middleware::Authorization;
 use actix_web::web::Form;
 use actix_web::{HttpResponse, Responder, Result, delete, get, post, put, web};
 use bcrypt::{hash, verify};
@@ -9,7 +11,10 @@ use std::sync::Mutex;
 use tera::Tera;
 use uuid::Uuid;
 
-use crate::models::{AssignForm, BugReport, BugWithId, LoginPayload, ProjectPayload,CreateDeveloper, Developer};
+use crate::models::{
+    AssignForm, BugReport, BugWithId, CreateDeveloper, CreateProject, Developer, LoginPayload,
+    Project, MemoryDb
+};
 
 static SALT: &str = "bugtrack";
 static PROJECTS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
@@ -19,9 +24,8 @@ pub fn config(cfg: &mut web::ServiceConfig) {
         .service(web::resource("/bugs").route(web::get().to(get_bugs)))
         .service(
             web::resource("/bugs/assign")
-            .route(web::post().to(assign_bug))
-                .route(web::get().to(show_assign_form))
-                ,
+                .route(web::post().to(assign_bug))
+                .route(web::get().to(show_assign_form)),
         )
         .service(web::resource("/bugs/new").route(web::post().to(create_bug)))
         .service(
@@ -30,13 +34,18 @@ pub fn config(cfg: &mut web::ServiceConfig) {
                 .route(web::delete().to(delete_bugs_id))
                 .route(web::patch().to(update_bug)),
         )
-        .service(web::resource("/developers/new")
-                .route(web::post().to(create_developer)))
-        .service(web::resource("/projects").route(web::get().to(get_projects)))
-        .service(web::resource("/projects").route(web::post().to(add_project)))
-        .service(web::resource("/login").route(web::get().to(show_login_form)))
-        .service(web::resource("/login").route(web::post().to(login_form)))
-        .service(web::resource("/api/login").route(web::post().to(login)));
+        .service(web::resource("/developers/new").route(web::post().to(create_developer)))
+        .service(
+            web::resource("/projects")
+                .route(web::get().to(get_projects))
+                .route(web::post().to(add_project).wrap(Authorization)),
+        )
+        .service(
+            web::resource("/page/login")
+                .route(web::get().to(show_login_form))
+                .route(web::post().to(login_form)),
+        )
+        .service(web::resource("/login").route(web::post().to(login)));
 }
 
 // === POST /bugs/new ===
@@ -68,16 +77,59 @@ async fn create_bug(pool: web::Data<SqlitePool>, bug: web::Json<BugReport>) -> i
 }
 
 // === GET /projects ===
-async fn get_projects() -> impl Responder {
-    let list = PROJECTS.lock().unwrap();
-    HttpResponse::Ok().json(&*list)
+async fn get_projects(pool: web::Data<MemoryDb>) -> impl Responder {
+    let res = sqlx::query("SELECT * FROM projects")
+        .fetch_all(&pool.0)
+        .await;
+
+    match res {
+        Ok(res) => {
+            let bugs: Vec<Project> = res
+                .into_iter()
+                .map(|r| Project {
+                    id: r.get("id"),
+                    name: r.get("name"),
+                    description: r.get("description"),
+                    status: r.get("status"),
+                })
+                .collect();
+
+            if bugs.len() == 0 {
+                return HttpResponse::NotFound().json("No bugs in the system");
+            }
+            HttpResponse::Ok().json(bugs)
+        }
+        Err(e) => {
+            eprintln!("Failed to fetch stock prices: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to fetch stock prices")
+        }
+    }
 }
 
 // === POST /projects (admin only) ===
-async fn add_project(project: web::Json<ProjectPayload>) -> impl Responder {
-    let mut list = PROJECTS.lock().unwrap();
-    list.push(project.name.clone());
-    HttpResponse::Ok().json(&*list)
+async fn add_project(
+    pool: web::Data<MemoryDb>,
+    project: web::Json<CreateProject>,
+) -> impl Responder {
+    let id = Uuid::new_v4().to_string();
+    let result =
+        sqlx::query("INSERT INTO projects (id,name, description, status) VALUES (?,?, ?, ?)")
+            .bind(&id)
+            .bind(&project.name)
+            .bind(&project.description)
+            .bind(&project.status)
+            .execute(&pool.0)
+            .await;
+
+    match result {
+        Ok(res) => HttpResponse::Ok().json(Project {
+            id: id,
+            name: project.name.clone(),
+            description: project.description.clone(),
+            status: project.status.clone(),
+        }),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Database error: {}", e)),
+    }
 }
 
 // === POST /login ===
@@ -89,10 +141,11 @@ async fn login(payload: web::Json<LoginPayload>) -> impl Responder {
     if payload.username == correct_username
         && hash_password(&payload.password) == correct_password_hash
     {
-        HttpResponse::Ok().json(serde_json::json!({
+        let token = create_token(Uuid::new_v4());
+        return HttpResponse::Ok().json(serde_json::json!({
             "status": "success",
-            "token": "fake-session-token-123"
-        }))
+            "token": token
+        }));
     } else {
         HttpResponse::Unauthorized().json(serde_json::json!({
             "status": "failure"
@@ -150,14 +203,11 @@ async fn assign_bug(
     tmpl: web::Data<Tera>,
     form: Form<AssignForm>,
 ) -> Result<HttpResponse> {
-
     let result = sqlx::query("UPDATE bugs SET developer_id = ? WHERE id = ?")
         .bind(form.developer_id.clone())
         .bind(form.id.clone())
         .execute(pool.get_ref())
         .await;
-
-    
 
     match result {
         Ok(res) if res.rows_affected() == 1 => {
@@ -230,8 +280,6 @@ async fn get_bugs_id(pool: web::Data<SqlitePool>, path: web::Path<String>) -> im
 
     match res {
         Ok(res) => {
-
-            
             let bugs: Vec<BugWithId> = res
                 .into_iter()
                 .map(|r| BugWithId {
@@ -269,7 +317,6 @@ async fn delete_bugs_id(pool: web::Data<SqlitePool>, path: web::Path<String>) ->
                 return HttpResponse::NotFound().json("No bug updated");
             }
 
-            
             HttpResponse::Ok().json("Bug is deleted")
         }
         Err(e) => {
@@ -317,16 +364,17 @@ async fn update_bug(
     }
 }
 
-async fn create_developer(pool: web::Data<SqlitePool>, bug: web::Json<CreateDeveloper>) -> impl Responder {
+async fn create_developer(
+    pool: web::Data<SqlitePool>,
+    bug: web::Json<CreateDeveloper>,
+) -> impl Responder {
     let id = Uuid::new_v4().to_string();
-    let result = sqlx::query(
-        "INSERT INTO developers (id,name, accessLevel ) VALUES ( ?, ?, ?)"
-    )
-    .bind(&id)
-    .bind(&bug.name)
-    .bind(&bug.accessLevel)
-    .execute(pool.get_ref())
-    .await;
+    let result = sqlx::query("INSERT INTO developers (id,name, accessLevel ) VALUES ( ?, ?, ?)")
+        .bind(&id)
+        .bind(&bug.name)
+        .bind(&bug.accessLevel)
+        .execute(pool.get_ref())
+        .await;
 
     match result {
         Ok(res) => HttpResponse::Ok().json(Developer {

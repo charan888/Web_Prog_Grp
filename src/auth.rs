@@ -13,6 +13,7 @@ struct Claims {
 
 
 pub fn create_token(user_id: Uuid) -> String {
+    
 
     let secret = env::var("JWT_KEY").expect("JWT_KEY must be set in .env");
     
@@ -40,7 +41,9 @@ pub fn create_token(user_id: Uuid) -> String {
 
 pub fn validate_token(token: &str) -> bool {
 
-    let secret = env::var("JWT_KEY").expect("JWT_KEY must be set in .env");
+     let secret = env::var("JWT_KEY").expect("JWT_KEY must be set in .env");
+
+    //let secret = "secretkey";
     
     decode::<Claims>(
         token,                                 

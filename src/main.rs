@@ -8,19 +8,30 @@ use once_cell::sync::Lazy;
 use tera::Tera;
 use actix_web::{HttpRequest, Result};
 use actix_web::web::Form;
+use dotenvy::dotenv;
 
 mod handlers;
 mod models;
 mod auth;
+mod middleware;
+
+use crate::models::MemoryDb;
 
 
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     //std::env::set_var("RUST_LOG", "debug");
+
+     dotenv().ok();
+
     env_logger::init();
 
     let db_pool = SqlitePool::connect("sqlite://bugs.db?mode=rwc")
+    .await
+    .expect("Failed to connect to DB");
+
+    let memory_pool = SqlitePool::connect("sqlite::memory:")
     .await
     .expect("Failed to connect to DB");
 
@@ -37,19 +48,29 @@ async fn main() -> std::io::Result<()> {
             developer_id TEXT,
             FOREIGN KEY (developer_id) REFERENCES developers(id)
         )
-    ").execute(&db_pool).await.unwrap();
+    ").execute(&memory_pool).await.unwrap();
 
     sqlx::query("
         CREATE TABLE IF NOT EXISTS developers (
             id TEXT PRIMARY KEY ,
             name VARCHAR(100) NOT NULL,
-            accessLevel INTEGERT NOT NULL
+            accessLevel INTEGER NOT NULL
+        )
+    ").execute(&db_pool).await.unwrap();
+
+    sqlx::query("
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY ,
+            name VARCHAR(100) NOT NULL,
+            status VARCHAR(50) NOT NULL,
+            description TEXT
         )
     ").execute(&db_pool).await.unwrap();
 
     HttpServer::new(move || {
         App::new()
             .app_data(Data::new(db_pool.clone()))
+            .app_data(Data::new(MemoryDb(db_pool.clone())))
             .app_data(Data::new(tera.clone()))
             .wrap(Logger::default())
             .configure(handlers::config)

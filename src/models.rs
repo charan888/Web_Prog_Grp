@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use sqlx::{SqlitePool};
 
 #[derive(Serialize, Deserialize)]
 pub struct BugReport {
@@ -35,6 +36,21 @@ pub struct CreateDeveloper {
     pub accessLevel: i64,
 }
 
+#[derive(Serialize,Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub description: String,
+}
+
+#[derive(Serialize,Deserialize)]
+pub struct CreateProject {
+    pub name: String,
+    pub status: String,
+    pub description: String,
+}
+
 
 #[derive(Deserialize)]
 pub struct ProjectPayload {
@@ -52,3 +68,6 @@ pub struct AssignForm {
     pub id: String,
     pub developer_id: String,
 }
+
+#[derive(Clone)]
+pub struct MemoryDb(pub SqlitePool);
