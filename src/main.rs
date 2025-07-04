@@ -11,6 +11,7 @@ use actix_web::web::Form;
 
 mod handlers;
 mod models;
+mod auth;
 
 
 
@@ -28,12 +29,21 @@ async fn main() -> std::io::Result<()> {
     // Ensure table exists
     sqlx::query("
         CREATE TABLE IF NOT EXISTS bugs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             description TEXT NOT NULL,
             reported_by TEXT NOT NULL,
             severity TEXT NOT NULL,
-            developer_id INTEGER
+            developer_id TEXT,
+            FOREIGN KEY (developer_id) REFERENCES developers(id)
+        )
+    ").execute(&db_pool).await.unwrap();
+
+    sqlx::query("
+        CREATE TABLE IF NOT EXISTS developers (
+            id TEXT PRIMARY KEY ,
+            name VARCHAR(100) NOT NULL,
+            accessLevel INTEGERT NOT NULL
         )
     ").execute(&db_pool).await.unwrap();
 

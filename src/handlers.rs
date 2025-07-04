@@ -1,49 +1,51 @@
-
-use actix_web::{HttpResponse, Responder, delete, get, post, put, web};
-use bcrypt::{hash, verify};
-use sqlx::{Row, SqlitePool};
-use uuid::Uuid;
-use chrono::prelude::*;
-use actix_web::{ App, HttpServer, middleware::Logger};
-use serde::{Serialize, Deserialize};
-use std::sync::Mutex;
-use actix_web::web::Data;
-use sha2::{Sha256, Digest};
-use once_cell::sync::Lazy;
-use tera::Tera;
-use actix_web::{HttpRequest, Result};
 use actix_web::web::Form;
+use actix_web::{HttpResponse, Responder, Result, delete, get, post, put, web};
+use bcrypt::{hash, verify};
+use chrono::prelude::*;
+use once_cell::sync::Lazy;
+use sha2::{Digest, Sha256};
+use sqlx::{FromRow, Row, Sqlite, SqlitePool};
+use std::sync::Mutex;
+use tera::Tera;
+use uuid::Uuid;
 
-use crate::models::{BugReport, BugWithId, ProjectPayload, LoginPayload, AssignForm};
-
-
+use crate::models::{AssignForm, BugReport, BugWithId, LoginPayload, ProjectPayload,CreateDeveloper, Developer};
 
 static SALT: &str = "bugtrack";
 static PROJECTS: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 pub fn config(cfg: &mut web::ServiceConfig) {
-    cfg.service(web::resource("/").route(web::get().to(homepage))) 
+    cfg.service(web::resource("/").route(web::get().to(homepage)))
+        .service(web::resource("/bugs").route(web::get().to(get_bugs)))
+        .service(
+            web::resource("/bugs/assign")
+            .route(web::post().to(assign_bug))
+                .route(web::get().to(show_assign_form))
+                ,
+        )
         .service(web::resource("/bugs/new").route(web::post().to(create_bug)))
+        .service(
+            web::resource("/bugs/{id}")
+                .route(web::get().to(get_bugs_id))
+                .route(web::delete().to(delete_bugs_id))
+                .route(web::patch().to(update_bug)),
+        )
+        .service(web::resource("/developers/new")
+                .route(web::post().to(create_developer)))
         .service(web::resource("/projects").route(web::get().to(get_projects)))
         .service(web::resource("/projects").route(web::post().to(add_project)))
-        .service(web::resource("/login").route(web::get().to(show_login_form))) 
+        .service(web::resource("/login").route(web::get().to(show_login_form)))
         .service(web::resource("/login").route(web::post().to(login_form)))
-        .service(web::resource("/api/login").route(web::post().to(login)))  
-        .service(web::resource("/bugs/assign").route(web::post().to(show_assign_form)))
-        .service(web::resource("/bugs/assign").route(web::post().to(assign_bug))); 
-        
-        
-        
+        .service(web::resource("/api/login").route(web::post().to(login)));
 }
 
 // === POST /bugs/new ===
-async fn create_bug(
-    pool: web::Data<SqlitePool>,
-    bug: web::Json<BugReport>
-) -> impl Responder {
+async fn create_bug(pool: web::Data<SqlitePool>, bug: web::Json<BugReport>) -> impl Responder {
+    let id = Uuid::new_v4().to_string();
     let result = sqlx::query(
-        "INSERT INTO bugs (title, description, reported_by, severity, developer_id) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO bugs (id,title, description, reported_by, severity, developer_id) VALUES (?,?, ?, ?, ?, ?)"
     )
+    .bind(&id)
     .bind(&bug.title)
     .bind(&bug.description)
     .bind(&bug.reported_by)
@@ -53,17 +55,14 @@ async fn create_bug(
     .await;
 
     match result {
-        Ok(res) => {
-            let bug_id = res.last_insert_rowid();
-            HttpResponse::Ok().json(BugWithId {
-                bug_id,
-                title: bug.title.clone(),
-                description: bug.description.clone(),
-                reported_by: bug.reported_by.clone(),
-                severity: bug.severity.clone(),
-                developer_id:  bug.developer_id.clone(),
-            })
-        }
+        Ok(res) => HttpResponse::Ok().json(BugWithId {
+            id: id,
+            title: bug.title.clone(),
+            description: bug.description.clone(),
+            reported_by: bug.reported_by.clone(),
+            severity: bug.severity.clone(),
+            developer_id: bug.developer_id.clone(),
+        }),
         Err(e) => HttpResponse::InternalServerError().body(format!("Database error: {}", e)),
     }
 }
@@ -87,7 +86,9 @@ async fn login(payload: web::Json<LoginPayload>) -> impl Responder {
     let correct_username = "admin";
     let correct_password_hash = hash_password("password123");
 
-    if payload.username == correct_username && hash_password(&payload.password) == correct_password_hash {
+    if payload.username == correct_username
+        && hash_password(&payload.password) == correct_password_hash
+    {
         HttpResponse::Ok().json(serde_json::json!({
             "status": "success",
             "token": "fake-session-token-123"
@@ -107,36 +108,39 @@ fn hash_password(password: &str) -> String {
 // GET /login (form page)
 async fn show_login_form(tmpl: web::Data<Tera>) -> Result<HttpResponse> {
     let ctx = tera::Context::new();
-    let rendered = tmpl.render("login.html", &ctx)
+    let rendered = tmpl
+        .render("login.html", &ctx)
         .map_err(|_| actix_web::error::ErrorInternalServerError("Template error"))?;
     Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
 }
 
 // POST /login (form submission)
-async fn login_form(
-    tmpl: web::Data<Tera>,
-    form: web::Form<LoginPayload>
-) -> Result<HttpResponse> {
+async fn login_form(tmpl: web::Data<Tera>, form: web::Form<LoginPayload>) -> Result<HttpResponse> {
     let correct_username = "admin";
     let correct_password_hash = hash_password("password123");
 
     if form.username == correct_username && hash_password(&form.password) == correct_password_hash {
         let mut ctx = tera::Context::new();
         ctx.insert("username", &form.username);
-        let rendered = tmpl.render("assign.html", &ctx)
+        let rendered = tmpl
+            .render("assign.html", &ctx)
             .map_err(|_| actix_web::error::ErrorInternalServerError("Template error"))?;
         Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
     } else {
         let mut ctx = tera::Context::new();
         ctx.insert("error", "Invalid username or password");
-        let rendered = tmpl.render("login.html", &ctx)
+        let rendered = tmpl
+            .render("login.html", &ctx)
             .map_err(|_| actix_web::error::ErrorInternalServerError("Template error"))?;
-        Ok(HttpResponse::Unauthorized().content_type("text/html").body(rendered))
+        Ok(HttpResponse::Unauthorized()
+            .content_type("text/html")
+            .body(rendered))
     }
 }
 
 async fn show_assign_form(tmpl: web::Data<Tera>) -> Result<HttpResponse> {
-    let rendered = tmpl.render("assign.html", &tera::Context::new())
+    let rendered = tmpl
+        .render("assign.html", &tera::Context::new())
         .map_err(|_| actix_web::error::ErrorInternalServerError("Template error"))?;
     Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
 }
@@ -146,18 +150,22 @@ async fn assign_bug(
     tmpl: web::Data<Tera>,
     form: Form<AssignForm>,
 ) -> Result<HttpResponse> {
+
     let result = sqlx::query("UPDATE bugs SET developer_id = ? WHERE id = ?")
-        .bind(form.developer_id)
-        .bind(form.bug_id)
+        .bind(form.developer_id.clone())
+        .bind(form.id.clone())
         .execute(pool.get_ref())
         .await;
+
+    
 
     match result {
         Ok(res) if res.rows_affected() == 1 => {
             let mut ctx = tera::Context::new();
-            ctx.insert("bug_id", &form.bug_id);
+            ctx.insert("bug_id", &form.id);
             ctx.insert("developer_id", &form.developer_id);
-            let rendered = tmpl.render("assign_success.html", &ctx)
+            let rendered = tmpl
+                .render("assign_success.html", &ctx)
                 .map_err(|_| actix_web::error::ErrorInternalServerError("Template error"))?;
             Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
         }
@@ -166,7 +174,156 @@ async fn assign_bug(
 }
 
 async fn homepage(tmpl: web::Data<Tera>) -> Result<HttpResponse> {
-    let rendered = tmpl.render("index.html", &tera::Context::new())
+    let rendered = tmpl
+        .render("index.html", &tera::Context::new())
         .map_err(|_| actix_web::error::ErrorInternalServerError("Template error"))?;
     Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
+}
+
+async fn get_bugs(pool: web::Data<SqlitePool>) -> impl Responder {
+    let res = sqlx::query("SELECT * FROM bugs")
+        .fetch_all(pool.get_ref())
+        .await;
+
+    match res {
+        Ok(res) => {
+            let bugs: Vec<BugWithId> = res
+                .into_iter()
+                .map(|r| BugWithId {
+                    id: r.get("id"),
+                    title: r.get("title"),
+                    description: r.get("description"),
+                    reported_by: r.get("reported_by"),
+                    severity: r.get("severity"),
+                    developer_id: r.get("developer_id"),
+                })
+                .collect();
+
+            if bugs.len() == 0 {
+                return HttpResponse::NotFound().json("No bugs in the system");
+            }
+            HttpResponse::Ok().json(bugs)
+        }
+        Err(e) => {
+            eprintln!("Failed to fetch stock prices: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to fetch stock prices")
+        }
+    }
+}
+
+async fn get_bugs_id(pool: web::Data<SqlitePool>, path: web::Path<String>) -> impl Responder {
+    let id = path.into_inner();
+    let res = sqlx::query("SELECT * FROM bugs WHERE id = ?")
+        .bind(id)
+        .fetch_all(pool.get_ref())
+        .await;
+
+    match res {
+        Ok(res) => {
+
+            
+            let bugs: Vec<BugWithId> = res
+                .into_iter()
+                .map(|r| BugWithId {
+                    id: r.get("id"),
+                    title: r.get("title"),
+                    description: r.get("description"),
+                    reported_by: r.get("reported_by"),
+                    severity: r.get("severity"),
+                    developer_id: r.get("developer_id"),
+                })
+                .collect();
+
+            if bugs.len() == 0 {
+                return HttpResponse::NotFound().json("No bug found");
+            }
+            HttpResponse::Ok().json(bugs)
+        }
+        Err(e) => {
+            eprintln!("Failed to fetch stock prices: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to fetch stock prices")
+        }
+    }
+}
+
+async fn delete_bugs_id(pool: web::Data<SqlitePool>, path: web::Path<String>) -> impl Responder {
+    let id = path.into_inner();
+    let res = sqlx::query("DELETE FROM bugs WHERE id = ?")
+        .bind(id)
+        .execute(pool.get_ref())
+        .await;
+
+    match res {
+        Ok(res) => {
+            if res.rows_affected() == 0 {
+                return HttpResponse::NotFound().json("No bug updated");
+            }
+
+            
+            HttpResponse::Ok().json("Bug is deleted")
+        }
+        Err(e) => {
+            eprintln!("Failed to fetch stock prices: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to fetch stock prices")
+        }
+    }
+}
+
+async fn update_bug(
+    pool: web::Data<SqlitePool>,
+    bug: web::Json<BugWithId>,
+    path: web::Path<String>,
+) -> impl Responder {
+    let id = path.into_inner().to_string();
+    println!("{}", id);
+    let result = sqlx::query(
+        "UPDATE bugs SET  title = ?, description = ?, reported_by = ?, severity = ?, developer_id = ? WHERE id =?"
+    )
+    .bind(&bug.title)
+    .bind(&bug.description)
+    .bind(&bug.reported_by)
+    .bind(&bug.severity)
+    .bind(&bug.developer_id)
+    .bind(&id)
+    .execute(pool.get_ref())
+    .await;
+
+    match result {
+        Ok(res) => {
+            if res.rows_affected() == 0 {
+                return HttpResponse::NotFound().json("No bug updated");
+            }
+
+            HttpResponse::Ok().json(BugWithId {
+                id: id,
+                title: bug.title.clone(),
+                description: bug.description.clone(),
+                reported_by: bug.reported_by.clone(),
+                severity: bug.severity.clone(),
+                developer_id: bug.developer_id.clone(),
+            })
+        }
+        Err(e) => HttpResponse::InternalServerError().body(format!("Database error: {}", e)),
+    }
+}
+
+async fn create_developer(pool: web::Data<SqlitePool>, bug: web::Json<CreateDeveloper>) -> impl Responder {
+    let id = Uuid::new_v4().to_string();
+    let result = sqlx::query(
+        "INSERT INTO developers (id,name, accessLevel ) VALUES ( ?, ?, ?)"
+    )
+    .bind(&id)
+    .bind(&bug.name)
+    .bind(&bug.accessLevel)
+    .execute(pool.get_ref())
+    .await;
+
+    match result {
+        Ok(res) => HttpResponse::Ok().json(Developer {
+            id: id,
+            name: bug.name.clone(),
+            accessLevel: bug.accessLevel.clone(),
+        }),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Database error: {}", e)),
+    }
 }
