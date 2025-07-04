@@ -164,12 +164,22 @@ async fn assign_bug(
             let mut ctx = tera::Context::new();
             ctx.insert("bug_id", &form.id);
             ctx.insert("developer_id", &form.developer_id);
+            ctx.insert("success", "Bug assigned successfully!");
             let rendered = tmpl
-                .render("assign_success.html", &ctx)
+                .render("assign.html", &ctx)
                 .map_err(|_| actix_web::error::ErrorInternalServerError("Template error"))?;
             Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
         }
-        _ => Ok(HttpResponse::BadRequest().body("Invalid bug ID or developer ID")),
+        _ => {
+            let mut ctx = tera::Context::new();
+            ctx.insert("error", "Invalid Bug ID or Developer ID");
+            ctx.insert("bug_id", &form.id);
+            ctx.insert("developer_id", &form.developer_id);
+            let rendered = tmpl
+                .render("assign.html", &ctx)
+                .map_err(|_| actix_web::error::ErrorInternalServerError("Template error"))?;
+            Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
+        }
     }
 }
 

@@ -1,12 +1,33 @@
 <!DOCTYPE html>
 <html>
-<head><title>Assign Bug</title></head>
-<body>
+  <head>
+    <title>Assign Bug</title>
+  </head>
+  <body>
     <h1>Assign Bug</h1>
     <form action="/bugs/assign" method="post">
-        <label>Bug ID: <input type="text" name="id" required></label><br>
-        <label>Developer ID: <input type="text" name="developer_id" required></label><br>
-        <button type="submit">Assign</button>
+      <label
+        >Bug ID:
+        <input
+          type="number"
+          name="id"
+          value="{{ bug_id | default(value=0) }}"
+          required /></label
+      ><br />
+      <label
+        >Developer ID:
+        <input
+          type="number"
+          name="developer_id"
+          value="{{ developer_id | default(value=0) }}"
+          required /></label
+      ><br />
+      <button type="submit">Assign</button>
+      {% if success %}
+      <p style="color: green">{{ success }}</p>
+      {% endif %} {% if error %}
+      <p style="color: red">{{ error }}</p>
+      {% endif %}
     </form>
-</body>
+  </body>
 </html>
