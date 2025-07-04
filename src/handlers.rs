@@ -12,8 +12,8 @@ use tera::Tera;
 use uuid::Uuid;
 
 use crate::models::{
-    AssignForm, BugReport, BugWithId, CreateDeveloper, CreateProject, Developer, LoginPayload,
-    Project, MemoryDb
+    AssignForm, BugFilter, BugReport, BugReportComplete, BugUpdate, BugWithId, CreateDeveloper,
+    CreateProject, Developer, LoginPayload, Project,
 };
 
 static SALT: &str = "bugtrack";
@@ -52,11 +52,13 @@ pub fn config(cfg: &mut web::ServiceConfig) {
 async fn create_bug(pool: web::Data<SqlitePool>, bug: web::Json<BugReport>) -> impl Responder {
     let id = Uuid::new_v4().to_string();
     let result = sqlx::query(
-        "INSERT INTO bugs (id,title, description, reported_by, severity, developer_id) VALUES (?,?, ?, ?, ?, ?)"
+        "INSERT INTO bugs (id,title, description, status, project, reported_by, severity, developer_id) VALUES (?,?, ?, ?, ?, ?,?,?)"
     )
     .bind(&id)
     .bind(&bug.title)
     .bind(&bug.description)
+    .bind(&bug.status)
+    .bind(&bug.project)
     .bind(&bug.reported_by)
     .bind(&bug.severity)
     .bind(&bug.developer_id)
@@ -67,6 +69,8 @@ async fn create_bug(pool: web::Data<SqlitePool>, bug: web::Json<BugReport>) -> i
         Ok(res) => HttpResponse::Ok().json(BugWithId {
             id: id,
             title: bug.title.clone(),
+            status: bug.status.clone(),
+            project: bug.project.clone(),
             description: bug.description.clone(),
             reported_by: bug.reported_by.clone(),
             severity: bug.severity.clone(),
@@ -77,9 +81,9 @@ async fn create_bug(pool: web::Data<SqlitePool>, bug: web::Json<BugReport>) -> i
 }
 
 // === GET /projects ===
-async fn get_projects(pool: web::Data<MemoryDb>) -> impl Responder {
+async fn get_projects(pool: web::Data<SqlitePool>) -> impl Responder {
     let res = sqlx::query("SELECT * FROM projects")
-        .fetch_all(&pool.0)
+        .fetch_all(pool.get_ref())
         .await;
 
     match res {
@@ -95,20 +99,20 @@ async fn get_projects(pool: web::Data<MemoryDb>) -> impl Responder {
                 .collect();
 
             if bugs.len() == 0 {
-                return HttpResponse::NotFound().json("No bugs in the system");
+                return HttpResponse::NotFound().json("No projects in the system");
             }
             HttpResponse::Ok().json(bugs)
         }
         Err(e) => {
-            eprintln!("Failed to fetch stock prices: {:?}", e);
-            HttpResponse::InternalServerError().body("Failed to fetch stock prices")
+            eprintln!("Failed to fetch projects: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to fetch projects")
         }
     }
 }
 
 // === POST /projects (admin only) ===
 async fn add_project(
-    pool: web::Data<MemoryDb>,
+    pool: web::Data<SqlitePool>,
     project: web::Json<CreateProject>,
 ) -> impl Responder {
     let id = Uuid::new_v4().to_string();
@@ -118,7 +122,7 @@ async fn add_project(
             .bind(&project.name)
             .bind(&project.description)
             .bind(&project.status)
-            .execute(&pool.0)
+            .execute(pool.get_ref())
             .await;
 
     match result {
@@ -240,10 +244,35 @@ async fn homepage(tmpl: web::Data<Tera>) -> Result<HttpResponse> {
     Ok(HttpResponse::Ok().content_type("text/html").body(rendered))
 }
 
-async fn get_bugs(pool: web::Data<SqlitePool>) -> impl Responder {
-    let res = sqlx::query("SELECT * FROM bugs")
-        .fetch_all(pool.get_ref())
-        .await;
+async fn get_bugs(pool: web::Data<SqlitePool>, query: web::Query<BugFilter>) -> impl Responder {
+    let mut string = "SELECT * FROM bugs".to_string();
+    let mut conditions= Vec::new();
+    let mut args: Vec<(String, String)> = Vec::new();
+
+    if let Some(status) = &query.status {
+        conditions.push("status = ?");
+        args.push(("status".into(), status.clone()));
+    }
+    if let Some(severity) = &query.severity {
+        conditions.push("severity = ?");
+        args.push(("severity".into(), severity.clone()));
+    }
+    if let Some(project) = &query.project {
+        string += " AND project = ?";
+        args.push(("project".into(), project.clone()));
+    }
+
+    if !conditions.is_empty() {
+        string.push_str(" WHERE ");
+        string.push_str(&conditions.join(" AND "));
+    }
+
+    let mut query = sqlx::query(&string);
+    for (_, value) in &args {
+        query = query.bind(value);
+    }
+
+    let res = query.fetch_all(pool.get_ref()).await;
 
     match res {
         Ok(res) => {
@@ -251,6 +280,8 @@ async fn get_bugs(pool: web::Data<SqlitePool>) -> impl Responder {
                 .into_iter()
                 .map(|r| BugWithId {
                     id: r.get("id"),
+                    status: r.get("status"),
+                    project: r.get("project"),
                     title: r.get("title"),
                     description: r.get("description"),
                     reported_by: r.get("reported_by"),
@@ -265,8 +296,8 @@ async fn get_bugs(pool: web::Data<SqlitePool>) -> impl Responder {
             HttpResponse::Ok().json(bugs)
         }
         Err(e) => {
-            eprintln!("Failed to fetch stock prices: {:?}", e);
-            HttpResponse::InternalServerError().body("Failed to fetch stock prices")
+            eprintln!("Failed to fetch bugs: {:?}", e);
+            HttpResponse::InternalServerError().body("Failed to fetch bugs")
         }
     }
 }
@@ -284,6 +315,8 @@ async fn get_bugs_id(pool: web::Data<SqlitePool>, path: web::Path<String>) -> im
                 .into_iter()
                 .map(|r| BugWithId {
                     id: r.get("id"),
+                    status: r.get("status"),
+                    project: r.get("project"),
                     title: r.get("title"),
                     description: r.get("description"),
                     reported_by: r.get("reported_by"),
@@ -314,7 +347,7 @@ async fn delete_bugs_id(pool: web::Data<SqlitePool>, path: web::Path<String>) ->
     match res {
         Ok(res) => {
             if res.rows_affected() == 0 {
-                return HttpResponse::NotFound().json("No bug updated");
+                return HttpResponse::NotFound().json("No bug found");
             }
 
             HttpResponse::Ok().json("Bug is deleted")
@@ -328,19 +361,53 @@ async fn delete_bugs_id(pool: web::Data<SqlitePool>, path: web::Path<String>) ->
 
 async fn update_bug(
     pool: web::Data<SqlitePool>,
-    bug: web::Json<BugWithId>,
+    bug: web::Json<BugUpdate>,
     path: web::Path<String>,
 ) -> impl Responder {
     let id = path.into_inner().to_string();
-    println!("{}", id);
+
+    let bug_rp = match sqlx::query("SELECT * FROM bugs WHERE id = ?")
+        .bind(&id)
+        .fetch_optional(pool.get_ref())
+        .await
+    {
+        Ok(Some(bug)) => bug,
+        Ok(None) => return HttpResponse::NotFound().body("No bug found"),
+        Err(e) => return HttpResponse::InternalServerError().body(format!("Error: {}", e)),
+    };
+
+    let newBug = BugReportComplete {
+        title: bug.title.clone().unwrap_or_else(|| bug_rp.get("title")),
+        status: bug.status.clone().unwrap_or_else(|| bug_rp.get("status")),
+        description: bug
+            .description
+            .clone()
+            .unwrap_or_else(|| bug_rp.get("description")),
+        reported_by: bug
+            .reported_by
+            .clone()
+            .unwrap_or_else(|| bug_rp.get("reported_by")),
+        project: bug.project.clone().unwrap_or_else(|| bug_rp.get("project")),
+        severity: bug
+            .severity
+            .clone()
+            .unwrap_or_else(|| bug_rp.get("severity")),
+        developer_id: bug
+            .developer_id
+            .clone()
+            .unwrap_or_else(|| bug_rp.get("developer_id")),
+    };
+
     let result = sqlx::query(
-        "UPDATE bugs SET  title = ?, description = ?, reported_by = ?, severity = ?, developer_id = ? WHERE id =?"
+        "UPDATE bugs SET  title = ?, description = ?, reported_by = ?, severity = ?, developer_id = ?, status = ?, project = ? WHERE id =?"
     )
-    .bind(&bug.title)
-    .bind(&bug.description)
-    .bind(&bug.reported_by)
-    .bind(&bug.severity)
-    .bind(&bug.developer_id)
+    .bind(&newBug.title)
+    .bind(&newBug.description)
+    .bind(&newBug.reported_by)
+    .bind(&newBug.severity)
+    .bind(&newBug.developer_id)
+    .bind(&newBug.status)
+    .bind(&newBug.project)
     .bind(&id)
     .execute(pool.get_ref())
     .await;
@@ -353,10 +420,12 @@ async fn update_bug(
 
             HttpResponse::Ok().json(BugWithId {
                 id: id,
-                title: bug.title.clone(),
-                description: bug.description.clone(),
-                reported_by: bug.reported_by.clone(),
-                severity: bug.severity.clone(),
+                title: bug.title.clone().unwrap(),
+                status: bug.status.clone().unwrap(),
+                project: bug.project.clone().unwrap(),
+                description: bug.description.clone().unwrap(),
+                reported_by: bug.reported_by.clone().unwrap(),
+                severity: bug.severity.clone().unwrap(),
                 developer_id: bug.developer_id.clone(),
             })
         }

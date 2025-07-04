@@ -1,15 +1,39 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use sqlx::{SqlitePool};
+use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 #[derive(Serialize, Deserialize)]
 pub struct BugReport {
     pub title: String,
+    pub status: String,
     pub description: String,
     pub reported_by: String,
     pub severity: String,
+    pub project: String,
     pub developer_id: Option<String>,
 }
+
+pub struct BugReportComplete {
+    pub title: String,
+    pub status: String,
+    pub description: String,
+    pub reported_by: String,
+    pub severity: String,
+    pub project: String,
+    pub developer_id: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct BugUpdate {
+    pub status: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub reported_by: Option<String>,
+    pub severity: Option<String>,
+    pub project: Option<String>,
+    pub developer_id: Option<String>,
+}
+
 
 
 
@@ -17,10 +41,19 @@ pub struct BugReport {
 pub struct BugWithId {
     pub id: String,
     pub title: String,
+    pub status: String,
     pub description: String,
     pub reported_by: String,
     pub severity: String,
+    pub project: String,
     pub developer_id: Option<String>,
+}
+
+#[derive(Serialize,Deserialize)]
+pub struct BugFilter {
+    pub status: Option<String>,
+    pub severity: Option<String>,
+    pub project: Option<String>,
 }
 
 #[derive(Serialize,Deserialize)]
@@ -69,5 +102,3 @@ pub struct AssignForm {
     pub developer_id: String,
 }
 
-#[derive(Clone)]
-pub struct MemoryDb(pub SqlitePool);
