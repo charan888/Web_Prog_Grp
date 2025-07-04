@@ -4,7 +4,8 @@ curl -X POST http://localhost:8080/bugs/new \
     "title": "Login Crash",
     "description": "Crashes on login with invalid credentials",
     "reported_by": "charan",
-    "severity": "High"
+    "severity": "High",
+    "developer_id": 10,
   }'
 
 curl http://localhost:8080/projects
@@ -27,3 +28,5 @@ curl -X POST http://localhost:8080/login \
     "username": "admin",
     "password": "wrongpass"
   }'
+
+
