@@ -1,0 +1,29 @@
+curl -X POST http://localhost:8080/bugs/new \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Login Crash",
+    "description": "Crashes on login with invalid credentials",
+    "reported_by": "charan",
+    "severity": "High"
+  }'
+
+curl http://localhost:8080/projects
+curl -X POST http://localhost:8080/projects \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Bug Tracker V3"
+  }'
+
+curl -X POST http://localhost:8080/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "password": "password123"
+  }'
+
+curl -X POST http://localhost:8080/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "username": "admin",
+    "password": "wrongpass"
+  }'
