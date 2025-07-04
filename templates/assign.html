@@ -24,9 +24,13 @@
       ><br />
       <button type="submit">Assign</button>
       {% if success %}
-      <p style="color: green">{{ success }}</p>
+      <script>
+        alert("{{ success }}");
+      </script>
       {% endif %} {% if error %}
-      <p style="color: red">{{ error }}</p>
+      <script>
+        alert("{{ error }}");
+      </script>
       {% endif %}
     </form>
   </body>
