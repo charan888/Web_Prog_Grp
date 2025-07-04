@@ -214,7 +214,7 @@ async fn assign_bug(
             let mut ctx = tera::Context::new();
             ctx.insert("bug_id", &form.id);
             ctx.insert("developer_id", &form.developer_id);
-            ctx.insert("success", "Bug assigned successfully!");
+            ctx.insert("success", &format!("Bug {} successfully assigned to Developer {}!",form.id, form.developer_id),);
             let rendered = tmpl
                 .render("assign.html", &ctx)
                 .map_err(|_| actix_web::error::ErrorInternalServerError("Template error"))?;
